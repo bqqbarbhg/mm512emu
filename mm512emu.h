@@ -187,7 +187,7 @@ namespace mm512emu {
     mm512emu_forceinline m512i stream_load_si512(const void* mem_addr) { return { _mm256_stream_load_si256((const __m256i*)mem_addr), _mm256_stream_load_si256((const __m256i*)mem_addr + 1) }; }
     mm512emu_forceinline m512i set1_epi64(int64_t a) { return { _mm256_set1_epi64x(a), _mm256_set1_epi64x(a) }; }
 
-	inline void mask_compressstoreu_epi64(void *base_addr, mask8 k, m512i a) {
+    inline void mask_compressstoreu_epi64(void *base_addr, mask8 k, m512i a) {
         alignas(32) int64_t tmp[8];
         uint64_t mask = (uint64_t)(uint32_t)_mm256_movemask_epi8(k.lo) | (uint64_t)(uint32_t)_mm256_movemask_epi8(k.hi) << 32u;
         _mm256_store_si256((__m256i*)(tmp + 0), a.lo);
@@ -220,6 +220,8 @@ namespace mm512emu {
 
     uint32_t cvtmask8_u32(mask8 a) { return _pext_u32(_mm256_movemask_epi8(a.lo), 0x80808080u) | _pext_u32(_mm256_movemask_epi8(a.hi), 0x80808080u) << 4; }
     mask8 knot_mask8(mask8 a) { return { imp::not_si256(a.lo), imp::not_si256(a.hi) }; }
+    mask8 kand_mask8(mask8 a, mask8 b) { return { _mm256_and_si256(a.lo, b.lo), _mm256_and_si256(a.hi, b.hi) }; }
+    mask8 kor_mask8(mask8 a, mask8 b) { return { _mm256_or_si256(a.lo, b.lo), _mm256_or_si256(a.hi, b.hi) }; }
     mask8 kandn_mask8(mask8 a, mask8 b) { return { _mm256_andnot_si256(a.lo, b.lo), _mm256_andnot_si256(a.hi, b.hi) }; }
 }
 
@@ -372,6 +374,10 @@ namespace mm512emu {
 #define _cvtmask8_u32(a) mm512emu::cvtmask8_u32((a))
 #undef _knot_mask8
 #define _knot_mask8(a) mm512emu::knot_mask8((a))
+#undef _kand_mask8
+#define _kand_mask8(a, b) mm512emu::kand_mask8((a), (b))
+#undef _kor_mask8
+#define _kor_mask8(a, b) mm512emu::kor_mask8((a), (b))
 #undef _kandn_mask8
 #define _kandn_mask8(a, b) mm512emu::kandn_mask8((a), (b))
 
