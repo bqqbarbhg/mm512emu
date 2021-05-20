@@ -26,12 +26,13 @@ AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
 ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
-
 #include <immintrin.h>
 
 #ifdef _MSC_VER
+    #define mm512emu_forceinline_spec __forceinline
     #define mm512emu_forceinline static __forceinline
 #else
+    #define mm512emu_forceinline_spec inline __attribute__((always_inline))
     #define mm512emu_forceinline static inline __attribute__((always_inline))
 #endif
 
@@ -54,6 +55,16 @@ namespace mm512emu {
     struct mask8 {
         __m256i lo, hi;
     };
+
+    // Internal
+
+    namespace imp {
+        __m256i not_si256(__m256i a) { return _mm256_xor_si256(a, _mm256_set1_epi32(-1)); }
+        __m256i cmpgt_epu64(__m256i a, __m256i b) {
+            __m256i bias = _mm256_set1_epi64x(INT64_MIN);
+            return _mm256_cmpgt_epi64(_mm256_add_epi64(a, bias), _mm256_add_epi64(b, bias));
+        }
+    }
 
     // -- *_ps()
 
@@ -171,12 +182,45 @@ namespace mm512emu {
 
     // Load/store
 
-    m512i stream_load_si512(const void* mem_addr) { return { _mm256_stream_load_si256((const __m256i*)mem_addr), _mm256_stream_load_si256((const __m256i*)mem_addr + 1) }; }
+    mm512emu_forceinline m512i load_si512(const void* mem_addr) { return { _mm256_load_si256((const __m256i*)mem_addr), _mm256_load_si256((const __m256i*)mem_addr + 1) }; }
+    mm512emu_forceinline m512i loadu_si512(const void* mem_addr) { return { _mm256_loadu_si256((const __m256i*)mem_addr), _mm256_loadu_si256((const __m256i*)mem_addr + 1) }; }
+    mm512emu_forceinline m512i stream_load_si512(const void* mem_addr) { return { _mm256_stream_load_si256((const __m256i*)mem_addr), _mm256_stream_load_si256((const __m256i*)mem_addr + 1) }; }
+    mm512emu_forceinline m512i set1_epi64(int64_t a) { return { _mm256_set1_epi64x(a), _mm256_set1_epi64x(a) }; }
+
+	inline void mask_compressstoreu_epi64(void *base_addr, mask8 k, m512i a) {
+        alignas(32) int64_t tmp[8];
+        uint64_t mask = (uint64_t)(uint32_t)_mm256_movemask_epi8(k.lo) | (uint64_t)(uint32_t)_mm256_movemask_epi8(k.hi) << 32u;
+        _mm256_store_si256((__m256i*)(tmp + 0), a.lo);
+        _mm256_store_si256((__m256i*)(tmp + 4), a.hi);
+        int64_t *dst = (int64_t*)base_addr;
+        for (size_t i = 0; i < 8; i++) {
+            if (mask & 0x80) {
+                *dst++ = tmp[i];
+            }
+            mask >>= 8;
+        }
+    }
+
+    // Comparison
+
+    template <int Imm8> mask8 cmp_epu64_mask(m512i a, m512i b) = delete;
+    template <> mm512emu_forceinline_spec mask8 cmp_epu64_mask<_MM_CMPINT_EQ>(m512i a, m512i b) { return { _mm256_cmpeq_epi64(a.lo, b.lo), _mm256_cmpeq_epi64(a.hi, b.hi) }; }
+    template <> mm512emu_forceinline_spec mask8 cmp_epu64_mask<_MM_CMPINT_NE>(m512i a, m512i b) { return { imp::not_si256(_mm256_cmpeq_epi64(a.lo, b.lo)), imp::not_si256(_mm256_cmpeq_epi64(a.hi, b.hi)) }; }
+    template <> mm512emu_forceinline_spec mask8 cmp_epu64_mask<_MM_CMPINT_LT>(m512i a, m512i b) { return { imp::cmpgt_epu64(b.lo, a.lo), imp::cmpgt_epu64(b.hi, a.hi) }; }
+    template <> mm512emu_forceinline_spec mask8 cmp_epu64_mask<_MM_CMPINT_NLT>(m512i a, m512i b) { return { imp::not_si256(imp::cmpgt_epu64(b.lo, a.lo)), imp::not_si256(imp::cmpgt_epu64(b.hi, a.hi)) }; }
+    template <> mm512emu_forceinline_spec mask8 cmp_epu64_mask<_MM_CMPINT_LE>(m512i a, m512i b) { return { imp::not_si256(imp::cmpgt_epu64(a.lo, b.lo)), imp::not_si256(imp::cmpgt_epu64(a.hi, b.hi)) }; }
+    template <> mm512emu_forceinline_spec mask8 cmp_epu64_mask<_MM_CMPINT_NLE>(m512i a, m512i b) { return { imp::cmpgt_epu64(a.lo, b.lo), imp::cmpgt_epu64(a.hi, b.hi) }; }
 
     // Conversion
 
     m512 castsi512_ps(m512i a) { return { _mm256_castsi256_ps(a.lo), _mm256_castsi256_ps(a.hi) }; }
     m512d castsi512_pd(m512i a) { return { _mm256_castsi256_pd(a.lo), _mm256_castsi256_pd(a.hi) }; }
+
+    // -- Mask
+
+    uint32_t cvtmask8_u32(mask8 a) { return _pext_u32(_mm256_movemask_epi8(a.lo), 0x80808080u) | _pext_u32(_mm256_movemask_epi8(a.hi), 0x80808080u) << 4; }
+    mask8 knot_mask8(mask8 a) { return { imp::not_si256(a.lo), imp::not_si256(a.hi) }; }
+    mask8 kandn_mask8(mask8 a, mask8 b) { return { _mm256_andnot_si256(a.lo, b.lo), _mm256_andnot_si256(a.hi, b.hi) }; }
 }
 
 
@@ -298,12 +342,37 @@ namespace mm512emu {
 #undef _mm512_cvtps_pd
 #define _mm512_cvtps_pd(a) mm512emu::cvtps_pd((a))
 
-#undef __mm512_stream_load_si512
+#undef _mm512_load_si512
+#define _mm512_load_si512(a) mm512emu:load_si512((a))
+#undef _mm512_loadu_si512
+#define _mm512_loadu_si512(a) mm512emu:loadu_si512((a))
+#undef _mm512_stream_load_si512
 #define _mm512_stream_load_si512(a) mm512emu::stream_load_si512((a))
+#undef _mm512_load_epi32
+#define _mm512_load_epi32(a) mm512emu::load_si512((a))
+#undef _mm512_loadu_epi32
+#define _mm512_loadu_epi32(a) mm512emu::loadu_si512((a))
+#undef _mm512_load_epi64
+#define _mm512_load_epi64(a) mm512emu::load_si512((a))
+#undef _mm512_loadu_epi64
+#define _mm512_loadu_epi64(a) mm512emu::loadu_si512((a))
+#undef _mm512_set1_epi64
+#define _mm512_set1_epi64(a) mm512emu::set1_epi64((a))
+#undef _mm512_mask_compressstoreu_epi64
+#define _mm512_mask_compressstoreu_epi64(base_addr, k, a) mm512emu::mask_compressstoreu_epi64((base_addr), (k), (a))
+#undef _mm512_cmp_epu64_mask
+#define _mm512_cmp_epu64_mask(a, b, imm8) mm512emu::cmp_epu64_mask<(imm8)>((a), (b))
 #undef _mm512_castsi512_ps
 #define _mm512_castsi512_ps(a) mm512emu::castsi512_ps((a))
 #undef _mm512_castsi512_pd
 #define _mm512_castsi512_pd(a) mm512emu::castsi512_pd((a))
 
-#endif
 
+#undef _cvtmask8_u32
+#define _cvtmask8_u32(a) mm512emu::cvtmask8_u32((a))
+#undef _knot_mask8
+#define _knot_mask8(a) mm512emu::knot_mask8((a))
+#undef _kandn_mask8
+#define _kandn_mask8(a, b) mm512emu::kandn_mask8((a), (b))
+
+#endif
